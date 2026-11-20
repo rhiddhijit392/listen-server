@@ -68,6 +68,13 @@ function goTo(r, i) {
   r.updatedAt = Date.now();
 }
 
+const YT_KEY = process.env.YOUTUBE_API_KEY;
+const searchCache = new Map();
+
+const decode = (s = '') =>
+  s.replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+   .replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+
 io.on('connection', (socket) => {
   // Only sockets that joined a room may send commands to that room
   socket.use(([event, payload], next) => {
@@ -105,6 +112,35 @@ io.on('connection', (socket) => {
     socket.emit('state', publicState(r));
     socket.emit('presence', [...r.members.values()]);
   });
+
+socket.on('search', async ({ roomId, q }, ack) => {
+  if (!YT_KEY) return ack?.({ error: 'Search is not set up yet' });
+  q = String(q || '').trim().slice(0, 100);
+  if (!q) return ack?.({ results: [] });
+
+  const key = q.toLowerCase();
+  if (searchCache.has(key)) return ack?.({ results: searchCache.get(key) });
+
+  try {
+    const params = new URLSearchParams({
+      part: 'snippet', type: 'video', videoEmbeddable: 'true',
+      maxResults: '8', q, key: YT_KEY,
+    });
+    const res = await fetch(`https://www.googleapis.com/youtube/v3/search?${params}`);
+    const data = await res.json();
+    if (!res.ok) return ack?.({ error: data.error?.message || 'Search failed' });
+
+    const results = (data.items || []).map((it) => ({
+      videoId: it.id.videoId,
+      title: decode(it.snippet.title),
+      channel: decode(it.snippet.channelTitle),
+    }));
+    searchCache.set(key, results);
+    ack?.({ results });
+  } catch {
+    ack?.({ error: 'Search failed' });
+  }
+});
 
   socket.on('add', async ({ roomId, url }, ack) => {
     const videoId = parseYouTubeId(url);
